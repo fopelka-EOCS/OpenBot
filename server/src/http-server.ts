@@ -30,6 +30,10 @@ import {
 type StreamData = {
   upstream: string;
   inward?: WebSocket;
+  /** Input that arrived before the socket to the computer had opened, sent once it does. */
+  early?: string[];
+  /** The computer counts the frames the screen confirms. */
+  confirms?: boolean;
 };
 
 /**
@@ -43,6 +47,12 @@ type SocketData = StreamData | ChannelSocket["data"];
 
 /** How every screencast frame from the computer starts: `JSON.stringify({ type: "frame", ... })`. */
 const FRAME_PREFIX = '{"type":"frame"';
+
+/** What a person's screen sends as a frame reaches it; the proxy says it for a frame it dropped. */
+const FRAME_RECEIVED = '{"type":"frame-received"}';
+
+/** How many inputs are held while the socket to the computer opens. A person, not a script, fills it. */
+const EARLY_INPUT_LIMIT = 256;
 
 /** How much may sit unsent to a person's browser before a new frame is dropped: about one frame. */
 const STREAM_BUFFER_LIMIT = 128 * 1024;
@@ -232,16 +242,28 @@ export function startHttpServer(deps: {
         // Anything that is not a frame, such as an error the person has to read, always goes.
         inward.onmessage = (event) => {
           const message = String(event.data);
+          // Only a computer that said it counts confirmations is sent one for a dropped frame.
+          if (message.startsWith('{"type":"hello"'))
+            stream.confirms = message.includes('"confirmFrames":true');
           if (
             message.startsWith(FRAME_PREFIX) &&
             ws.getBufferedAmount() > STREAM_BUFFER_LIMIT
-          )
+          ) {
+            // Said as received, so a computer counting the frames on their way does not wait on one
+            // that is never coming. A computer that is not counting ignores it.
+            if (stream.confirms && inward.readyState === WebSocket.OPEN)
+              inward.send(FRAME_RECEIVED);
             return;
+          }
           try {
             ws.send(message);
           } catch {
             inward.close();
           }
+        };
+        inward.onopen = () => {
+          for (const message of stream.early ?? []) inward.send(message);
+          stream.early = undefined;
         };
         inward.onclose = () => ws.close();
         inward.onerror = () => ws.close();
@@ -251,7 +273,15 @@ export function startHttpServer(deps: {
           channelSocket.message(asChannelSocket(ws), raw);
           return;
         }
-        if (ws.data.inward?.readyState === 1) ws.data.inward.send(String(raw));
+        const inward = ws.data.inward;
+        // A click made the moment the screen appeared used to be lost here, before the socket to the
+        // computer had finished opening. Held until it has, in order, and only that long.
+        if (inward?.readyState === WebSocket.CONNECTING) {
+          if ((ws.data.early?.length ?? 0) < EARLY_INPUT_LIMIT)
+            ws.data.early = [...(ws.data.early ?? []), String(raw)];
+          return;
+        }
+        if (inward?.readyState === WebSocket.OPEN) inward.send(String(raw));
       },
       close(ws, code, reason) {
         if (!isProxiedStream(ws.data)) {
