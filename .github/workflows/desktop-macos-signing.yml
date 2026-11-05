@@ -87,9 +87,11 @@ jobs:
         run: bun test src/UpdateOffer.test.tsx
         working-directory: desktop
       # What a release signs and attaches: a candidate pinned to its own images with no updater,
-      # and a stable release made Latest only once its signed installers are on it.
+      # and a stable release made Latest only once its signed installers are on it. And that every
+      # signed build carries the Intelligence CLI, its Mac binaries signed for notarization: an app
+      # without it cannot set up Intelligence, and the updater would put it on every Mac.
       - name: Signed release regressions
-        run: bun test scripts/signed-build.test.ts scripts/publish-signed-mac.test.ts ../scripts/release-latest.test.ts
+        run: bun test scripts/signed-build.test.ts scripts/publish-signed-mac.test.ts ../scripts/release-latest.test.ts scripts/release-cli-bundle.test.ts
         working-directory: desktop
       - name: Importing the Developer ID intermediate twice succeeds
         # The first real signing run stopped here: the .p12 already carried the intermediate, and a
@@ -338,6 +340,9 @@ jobs:
             echo '::error::The app is ad-hoc signed.'
             exit 1
           fi
+
+          # The CLI is in the app, and every Mach-O in it is ours, hardened and timestamped.
+          desktop/scripts/verify-cli-bundle.sh "$app" developer-id
       # Named by architecture because both runners produce `OpenBot.app.tar.gz`, and latest.json
       # points at one URL per platform. A pinned build made no updater archive.
       - name: Collect the artifacts
